@@ -30,6 +30,7 @@ class Image_Augmentation(object):
                  scale = 1.0,
                  xshift = 1,
                  yshift = 1,
+                 salt_and_pepper=None,
                  verbose = False,
                  log_file = './logs/augment_log.csv',
                  device='cpu'):
@@ -37,6 +38,7 @@ class Image_Augmentation(object):
         self.shot = shot
         self.pattern_shift = pattern_shift
         self.ellipticity = ellipticity
+        self.salt_and_pepper = salt_and_pepper 
         self.device = device.lower()
         if self.device == "gpu":
             self._xp = cp
@@ -45,7 +47,7 @@ class Image_Augmentation(object):
             self._xp = np
 
         if self.background:
-            print('background')
+            # print('background')
             self.weightbackground = weightbackground
             self.qBackgroundLorentz = qBackgroundLorentz
         if self.shot:
@@ -63,7 +65,7 @@ class Image_Augmentation(object):
         self.log_file = log_file
 
         file_object = open(self.log_file, 'a')
-        file_object.write('ellipticity,shot,background,pattern_shift \n')
+        file_object.write('ellipticity,shot,background,pattern_shift,s&p \n')
         file_object.close()
 
     def set_params(self,
@@ -74,6 +76,7 @@ class Image_Augmentation(object):
                  counts_per_pixel = 1000,
                  qBackgroundLorentz = 0.1,
                  weightbackground = 0.1,
+                 salt_and_pepper = None, 
                  scale = 1.0,
                  xshift = 1,
                  yshift = 1):
@@ -82,6 +85,7 @@ class Image_Augmentation(object):
         self.shot = shot
         self.pattern_shift = pattern_shift
         self.ellipticity = ellipticity
+        self.salt_and_pepper = salt_and_pepper
 
         if self.background:
             self.weightbackground = weightbackground
@@ -134,6 +138,7 @@ class Image_Augmentation(object):
         Generates Fourier coordinates for a (Nx,Ny)-shaped 2D array.
         Specifying the pixelSize argument sets a unit size.
         """
+        xp = self._xp
         if hasattr(pixelSize, '__len__'):
             assert len(pixelSize) == 2, "pixelSize must either be a scalar or have length 2"
             pixelSize_x = pixelSize[0]
@@ -142,9 +147,9 @@ class Image_Augmentation(object):
             pixelSize_x = pixelSize
             pixelSize_y = pixelSize
 
-        qx = np.fft.fftfreq(Nx, pixelSize_x)
-        qy = np.fft.fftfreq(Ny, pixelSize_y)
-        qy, qx = np.meshgrid(qy, qx)
+        qx = xp.fft.fftfreq(Nx, pixelSize_x)
+        qy = xp.fft.fftfreq(Ny, pixelSize_y)
+        qy, qx = xp.meshgrid(qy, qx)
         return qx, qy
 
     def augment_img(self, inputs, probe = None):
@@ -173,28 +178,20 @@ class Image_Augmentation(object):
             input_noise = self.elliptic_distort(input_noise)
         else:
             self.scale = 0
+            
+        if self.salt_and_pepper: 
+            input_noise = self.apply_salt_and_pepper(input_noise)
 
         t = time.time() - start_time
-        t = t/60
 
         if self.verbose:
             self.get_params()
             self.write_logs()
-            print('Augmentation Status: it took {} minutes to augment {} images... \n'.format(t, input_shape[0]), end = "\r")
+            print(f'Augmentation Status: it took {t/60:.1e} minutes to augment {input_shape[0]} images...')
         else:
             self.write_logs()
 
         return input_noise
-
-    # def scale_image(self, inputs): ### unused
-    #     '''
-    #     Scale image between 0 and 1
-    #     '''
-    #     input_shape = tf.shape(inputs)
-    #     mean = tf.squeeze(tf.math.reduce_sum(inputs, axis = (1,2)))
-    #     inputs_scaled = tf.transpose(tf.transpose(inputs, [3,1,2,0])/mean, [3,1,2,0])
-
-    #     return inputs_scaled
 
     def shot_noise(self, inputs):
         """
@@ -203,7 +200,7 @@ class Image_Augmentation(object):
         xp = self._xp
         image = xp.asarray(inputs)
         ###image_scale = self.scale_image(inputs)
-        image_noise = xp.random.poisson(shape = [], lam = xp.maximum(image,0) * self.counts_per_pixel)/float(self.counts_per_pixel)
+        image_noise = xp.random.poisson(lam = xp.maximum(image,0) * self.counts_per_pixel)/float(self.counts_per_pixel)
 
         return image_noise
 
@@ -248,7 +245,7 @@ class Image_Augmentation(object):
 
     #     return imageOut
 
-    def background_plasmon(self, inputs, probe):
+    def background_plasmon(self, inputs, probe=None):
         """
         Apply background plasmon noise
         """
@@ -273,11 +270,11 @@ class Image_Augmentation(object):
         probe_ff = xp.fft.fft2(probe).astype(xp.complex128)
         mul_ff = CBEDbg_ff * probe_ff
 
-
         CBEDbgConv = xp.fft.fftshift(xp.fft.ifft2(mul_ff), axes = [2,3])
         CBEDbgConv = xp.transpose(CBEDbgConv, (1,2,3,0))
 
-        CBEDout = inputs.astype(xp.float32) * (1-self.weightbackground) + CBEDbgConv.astype(xp.float32) * self.weightbackground
+        CBEDout = inputs.astype(xp.float32) * (1-self.weightbackground) + CBEDbgConv.real * self.weightbackground
+        # CBEDout = inputs.astype(xp.float32) * (1-self.weightbackground) + CBEDbgConv.astype(xp.float32) * self.weightbackground
 
         return CBEDout
 
@@ -285,17 +282,49 @@ class Image_Augmentation(object):
         """
         Apply pixel shift to the pattern using Fourier shift theorem for subpixel shifting
         """
-        image = self._as_array(inputs)
+        image = self._as_array(inputs)        
         _batch_size, height, width, _channels = image.shape
         xp = self._xp
+        
+        # im = xp.zeros((_batch_size, height*2, width*2, _channels)) 
+        # im[:, :height, :width, :] = image 
+        # im[:, height:, :width, :] = xp.flip(image, axis=1)
+        # im[:, :height, width:, :] = xp.flip(image, axis=2)
+        # im[:, height:, width:, :] = xp.flip(xp.flip(image, axis=2), axis=1)
+        # image = im
 
         qx, qy = self._make_fourier_coord(height, width, 1)
+        # qx, qy = self._make_fourier_coord(height*2, width*2, 1)
 
         ar = xp.transpose(image, (0,3,1,2)).astype(xp.complex64)
 
-        w = xp.exp(-(2j * xp.pi) * ((self.yshift * qy) + (self.xshift * qx)))
+        w = xp.exp(-(2.j * xp.pi) * ((self.yshift * qy) + (self.xshift * qx)))
         shifted_ar = xp.fft.ifft2(xp.fft.fft2(ar) * w).real
 
         shifted_ar = xp.transpose(shifted_ar, (0,2,3,1))
+        
+        # shifted_ar = shifted_ar[:,:height, :width, :] 
 
         return shifted_ar
+    
+    def apply_salt_and_pepper(self, inputs): 
+        minval = inputs.min()
+        imfac = (inputs - minval).max()        
+        im_sp = self.get_salt_and_pepper(inputs, self.salt_and_pepper)
+        im_sp = (im_sp * imfac) + minval
+        return im_sp
+    
+    
+    def get_salt_and_pepper(self, image, amount=1e-3, salt_vs_pepper=1., low_clip=0):
+        """
+        expects normalized input [0,1] 
+        based off skimage implementation 
+        """
+        xp = self._xp 
+        out = image.copy()
+        flipped = xp.random.random(out.shape) <= amount 
+        salted = xp.random.random(out.shape) <= salt_vs_pepper
+        peppered = ~salted
+        out[flipped & salted] = 1
+        out[flipped & peppered] = low_clip  
+        return out 
