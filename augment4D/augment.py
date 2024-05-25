@@ -23,55 +23,51 @@ from augment4D.interpolate import dense_image_warp
 class Image_Augmentation(object):
     def __init__(
         self,
-        add_background=False,
+        add_background=True,
         weightbackground=0.1,
         qBackgroundLorentz=0.1,
-        add_shot=False,
+        add_shot=True,
         counts_per_pixel=1000,
-        add_pattern_shift=False,
+        add_pattern_shift=True,
         xshift=1,
         yshift=1,
-        add_ellipticity=False,
-        ellipticity_scale=1.0,
+        add_ellipticity=True,
+        ellipticity_scale=0.1,
         add_salt_and_pepper=None,
-        salt_and_pepper_scale=1.0,
+        salt_and_pepper_scale=1e-3,
         verbose=False,
         log_file="./logs/augment_log.csv",
         device="cpu",
     ):
 
-        self.add_background = add_background
-        self.weightbackground = weightbackground if self.add_background else 0
-        self.qBackgroundLorentz = qBackgroundLorentz if self.add_background else 0
-
-        self.add_shot = add_shot
-        self.counts_per_pixel = counts_per_pixel if self.shot else "inf"
-
-        self.add_pattern_shift = add_pattern_shift
-        self.xshift = xshift if self.add_pattern_shift else 0
-        self.yshift = yshift if self.add_pattern_shift else 0
-
-        self.add_ellipticity = add_ellipticity
-        self.ellipticity_scale = ellipticity_scale if self.add_ellipticity else 0
-
-        self.add_salt_and_pepper = add_salt_and_pepper
-        self.salt_and_pepper_scale = (
-            salt_and_pepper_scale if self.add_salt_and_pepper else 0
-        )
-
         self.device = device.lower()
         if self.device == "gpu":
             self._xp = cp
-            ## set GPU device
+            ## todo add option for setting GPU device
         else:
             self._xp = np
+
+        self.set_params(
+            add_background,
+            weightbackground,
+            qBackgroundLorentz,
+            add_shot,
+            counts_per_pixel,
+            add_pattern_shift,
+            xshift,
+            yshift,
+            add_ellipticity,
+            ellipticity_scale,
+            add_salt_and_pepper,
+            salt_and_pepper_scale,
+        )
 
         self.verbose = verbose
         self.log_file = log_file
 
         with open(self.log_file, "a") as f:
             f.write(
-                "weighted_background,q_background_Lorentz,counts_per_pixel,xshift,yshift,ellipticity_scale,salt_and_pepper_scale\n"
+                "weighted_background,q_background_Lorentz,counts_per_pixel,xshift,yshift,ellipticity_scale,exx,eyy,exy,salt_and_pepper_scale\n"
             )
 
     def set_params(
@@ -85,23 +81,33 @@ class Image_Augmentation(object):
         xshift=1,
         yshift=1,
         add_ellipticity=False,
-        ellipticity_scale=1.0,
+        ellipticity_scale=0.1,
         add_salt_and_pepper=None,
-        salt_and_pepper_scale=1.0,
+        salt_and_pepper_scale=1e-3,
     ):
+        xp = self._xp
         self.add_background = add_background
         self.weightbackground = weightbackground if self.add_background else 0
         self.qBackgroundLorentz = qBackgroundLorentz if self.add_background else 0
 
         self.add_shot = add_shot
-        self.counts_per_pixel = counts_per_pixel if self.shot else "inf"
+        self.counts_per_pixel = counts_per_pixel if self.add_shot else self._xp.inf
 
         self.add_pattern_shift = add_pattern_shift
         self.xshift = xshift if self.add_pattern_shift else 0
         self.yshift = yshift if self.add_pattern_shift else 0
 
         self.add_ellipticity = add_ellipticity
-        self.ellipticity_scale = ellipticity_scale if self.add_ellipticity else 0
+        if add_ellipticity:
+            self.ellipticity_scale = ellipticity_scale
+            self.exx = xp.random.normal(loc=1, scale=self.ellipticity_scale)
+            self.eyy = xp.random.normal(loc=1, scale=self.ellipticity_scale)
+            self.exy = xp.random.normal(loc=0, scale=self.ellipticity_scale)
+        else:
+            self.ellipticity_scale = 0
+            self.exx = 1
+            self.eyy = 1
+            self.exy = 0
 
         self.add_salt_and_pepper = add_salt_and_pepper
         self.salt_and_pepper_scale = (
@@ -113,16 +119,17 @@ class Image_Augmentation(object):
         print(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> \n", end="\r")
         print(f"Weighted background: {self.weightbackground}")
         print(f"Background plasmon: {self.qBackgroundLorentz}")
-        print(f"Counts per pixel: {self.counts_per_pixel}")
+        print(f"Counts per pixel: {self.counts_per_pixel:.1e}")
         print(f"Pattern shift: {self.xshift},{self.yshift}")
         print(f"Ellipticity scaling: {self.ellipticity_scale}")
-        print(f"Salt & pepper scaling: {self.salt_and_pepper_scale}")
+        print(f"Ellipticity params (exx, eyy, exy): ({self.exx:.2f}, {self.eyy:.2f}, {self.exy:.2f})")
+        print(f"Salt & pepper scaling: {self.salt_and_pepper_scale:.1e}")
         print("<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< \n", end="\r")
 
     def write_logs(self):
         with open(self.log_file, "a") as f:
             f.write(
-                f"{self.weightbackground},{self.qBackgroundLorentz},{self.counts_per_pixel},{self.xshift},{self.yshift},{self.ellipticity_scale},{self.salt_and_pepper_scale}\n"
+                f"{self.weightbackground},{self.qBackgroundLorentz},{self.counts_per_pixel},{self.xshift},{self.yshift},{self.ellipticity_scale},{self.exx},{self.eyy},{self.exy},{self.salt_and_pepper_scale}\n"
             )
 
     def _as_array(self, ar):
@@ -171,13 +178,7 @@ class Image_Augmentation(object):
         if self.add_shot:
             input_noise = self.shot_noise(input_noise)
         else:
-            self.counts_per_pixel = 0
-
-        if self.add_pattern_shift:
-            input_noise = self.pattern_shift_ar(input_noise)
-        else:
-            self.xshift = 0
-            self.yshift = 0
+            self.counts_per_pixel = self._xp.inf
 
         if self.add_ellipticity or self.add_pattern_shift:
             input_noise = self.elastic_distort(input_noise)
@@ -213,7 +214,6 @@ class Image_Augmentation(object):
         """
         xp = self._xp
         image = xp.asarray(inputs)
-        ###image_scale = self.scale_image(inputs)
         image_noise = xp.random.poisson(
             lam=xp.maximum(image, 0) * self.counts_per_pixel
         ) / float(self.counts_per_pixel)
@@ -228,15 +228,12 @@ class Image_Augmentation(object):
         batch_size, height, width, _channels = image.shape
         xp = self._xp
 
-        exx = 1 / self.scale * (xp.random.rand() + 0.5) * xp.random.choice((1, -1))
-        eyy = 1 / self.scale * (xp.random.rand() + 0.5) * xp.random.choice((1, -1))
-        exy = 1 / self.scale * (xp.random.rand() + 0.5) * xp.random.choice((1, -1))
         # original -- was hardcoded for some reason
         # exx = 0.7 * scale
         # eyy = -0.5 * scale
         # exy = -0.9 * scale
 
-        m = [[1 + exx, exy / 2], [exy / 2, 1 + eyy]]
+        m = [[1 + self.exx, self.exy / 2], [self.exy / 2, 1 + self.eyy]]
 
         grid_x, grid_y = xp.meshgrid(xp.arange(width), xp.arange(height))
         grid_x = (grid_x - grid_x.mean()).astype(xp.float32)
@@ -317,7 +314,7 @@ class Image_Augmentation(object):
     def apply_salt_and_pepper(self, inputs):
         minval = inputs.min()
         imfac = (inputs - minval).max()
-        im_sp = self.get_salt_and_pepper(inputs, self.salt_and_pepper)
+        im_sp = self.get_salt_and_pepper(inputs, self.salt_and_pepper_scale)
         im_sp = (im_sp * imfac) + minval
         return im_sp
 
