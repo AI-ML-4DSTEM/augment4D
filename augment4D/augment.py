@@ -1,5 +1,5 @@
-#Author: Joydeep Munshi
-#Augmentation utility funciton for crystal4D
+# Author: Joydeep Munshi
+# Augmentation utility funciton for crystal4D
 """
 This is augmentation pipeline for 4DSTEM/STEM diffraction (CBED) images.
 The different available augmentation includes elliptic distrotion, plasmonic background
@@ -8,6 +8,7 @@ CBED, Probe, Potential Vg and Qz tilts while other noise are only applied on CBE
 """
 import time
 import numpy as np
+
 try:
     import cupy as cp
 except (ImportError, ModuleNotFoundError):
@@ -16,29 +17,48 @@ except (ImportError, ModuleNotFoundError):
 import scipy.signal as sp
 import numpy.matlib as nm
 from itertools import product
-# from augment4D.interpolate import dense_image_warp
+from augment4D.interpolate import dense_image_warp
+
 
 class Image_Augmentation(object):
-    def __init__(self,
-                 background = False,
-                 shot =False,
-                 pattern_shift = False,
-                 ellipticity = False,
-                 counts_per_pixel = 1000,
-                 qBackgroundLorentz = 0.1,
-                 weightbackground = 0.1,
-                 scale = 1.0,
-                 xshift = 1,
-                 yshift = 1,
-                 salt_and_pepper=None,
-                 verbose = False,
-                 log_file = './logs/augment_log.csv',
-                 device='cpu'):
-        self.background = background
-        self.shot = shot
-        self.pattern_shift = pattern_shift
-        self.ellipticity = ellipticity
-        self.salt_and_pepper = salt_and_pepper 
+    def __init__(
+        self,
+        add_background=False,
+        weightbackground=0.1,
+        qBackgroundLorentz=0.1,
+        add_shot=False,
+        counts_per_pixel=1000,
+        add_pattern_shift=False,
+        xshift=1,
+        yshift=1,
+        add_ellipticity=False,
+        ellipticity_scale=1.0,
+        add_salt_and_pepper=None,
+        salt_and_pepper_scale=1.0,
+        verbose=False,
+        log_file="./logs/augment_log.csv",
+        device="cpu",
+    ):
+
+        self.add_background = add_background
+        self.weightbackground = weightbackground if self.add_background else 0
+        self.qBackgroundLorentz = qBackgroundLorentz if self.add_background else 0
+
+        self.add_shot = add_shot
+        self.counts_per_pixel = counts_per_pixel if self.shot else "inf"
+
+        self.add_pattern_shift = add_pattern_shift
+        self.xshift = xshift if self.add_pattern_shift else 0
+        self.yshift = yshift if self.add_pattern_shift else 0
+
+        self.add_ellipticity = add_ellipticity
+        self.ellipticity_scale = ellipticity_scale if self.add_ellipticity else 0
+
+        self.add_salt_and_pepper = add_salt_and_pepper
+        self.salt_and_pepper_scale = (
+            salt_and_pepper_scale if self.add_salt_and_pepper else 0
+        )
+
         self.device = device.lower()
         if self.device == "gpu":
             self._xp = cp
@@ -46,91 +66,75 @@ class Image_Augmentation(object):
         else:
             self._xp = np
 
-        if self.background:
-            # print('background')
-            self.weightbackground = weightbackground
-            self.qBackgroundLorentz = qBackgroundLorentz
-        if self.shot:
-            self.counts_per_pixel = counts_per_pixel
-        if self.pattern_shift:
-            self.xshift = xshift
-            self.yshift = yshift
-        else:
-            self.xshift = 0
-            self.yshift = 0
-        if self.ellipticity:
-            self.scale = scale
-
         self.verbose = verbose
         self.log_file = log_file
 
-        file_object = open(self.log_file, 'a')
-        file_object.write('ellipticity,shot,background,pattern_shift,s&p \n')
-        file_object.close()
+        with open(self.log_file, "a") as f:
+            f.write(
+                "weighted_background,q_background_Lorentz,counts_per_pixel,xshift,yshift,ellipticity_scale,salt_and_pepper_scale\n"
+            )
 
-    def set_params(self,
-                 background = True,
-                 shot =True,
-                 pattern_shift = True,
-                 ellipticity = True,
-                 counts_per_pixel = 1000,
-                 qBackgroundLorentz = 0.1,
-                 weightbackground = 0.1,
-                 salt_and_pepper = None, 
-                 scale = 1.0,
-                 xshift = 1,
-                 yshift = 1):
+    def set_params(
+        self,
+        add_background=False,
+        weightbackground=0.1,
+        qBackgroundLorentz=0.1,
+        add_shot=False,
+        counts_per_pixel=1000,
+        add_pattern_shift=False,
+        xshift=1,
+        yshift=1,
+        add_ellipticity=False,
+        ellipticity_scale=1.0,
+        add_salt_and_pepper=None,
+        salt_and_pepper_scale=1.0,
+    ):
+        self.add_background = add_background
+        self.weightbackground = weightbackground if self.add_background else 0
+        self.qBackgroundLorentz = qBackgroundLorentz if self.add_background else 0
 
-        self.background = background
-        self.shot = shot
-        self.pattern_shift = pattern_shift
-        self.ellipticity = ellipticity
-        self.salt_and_pepper = salt_and_pepper
+        self.add_shot = add_shot
+        self.counts_per_pixel = counts_per_pixel if self.shot else "inf"
 
-        if self.background:
-            self.weightbackground = weightbackground
-            self.qBackgroundLorentz = qBackgroundLorentz
-        if self.shot:
-            self.counts_per_pixel = counts_per_pixel
-        if self.pattern_shift:
-            self.xshift = xshift
-            self.yshift = yshift
-        if self.ellipticity:
-            self.scale = scale
+        self.add_pattern_shift = add_pattern_shift
+        self.xshift = xshift if self.add_pattern_shift else 0
+        self.yshift = yshift if self.add_pattern_shift else 0
+
+        self.add_ellipticity = add_ellipticity
+        self.ellipticity_scale = ellipticity_scale if self.add_ellipticity else 0
+
+        self.add_salt_and_pepper = add_salt_and_pepper
+        self.salt_and_pepper_scale = (
+            salt_and_pepper_scale if self.add_salt_and_pepper else 0
+        )
 
     def get_params(self):
-        print('Printing augmentation summary... \n',end = "\r")
-        print('>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> \n',end = "\r")
-        print('Shots per pixel: {} \n'.format(self.counts_per_pixel),end = "\r")
-        print('Background plasmon: {} \n'.format(self.qBackgroundLorentz),end = "\r")
-        print('Ellipticity scaling: {} \n'.format(self.scale),end = "\r")
-        print('Pattern shift: {},{} \n'.format(self.xshift,self.yshift),end = "\r")
-        print('<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< \n', end = "\r")
-
+        print("Printing augmentation summary... \n", end="\r")
+        print(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> \n", end="\r")
+        print(f"Weighted background: {self.weightbackground}")
+        print(f"Background plasmon: {self.qBackgroundLorentz}")
+        print(f"Counts per pixel: {self.counts_per_pixel}")
+        print(f"Pattern shift: {self.xshift},{self.yshift}")
+        print(f"Ellipticity scaling: {self.ellipticity_scale}")
+        print(f"Salt & pepper scaling: {self.salt_and_pepper_scale}")
+        print("<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< \n", end="\r")
 
     def write_logs(self):
-        file_object = open(self.log_file, 'a')
-        file_object.write('{},{},{},{} \n'.format(self.ellipticity,self.shot,self.background,self.pattern_shift))
-        file_object.close()
+        with open(self.log_file, "a") as f:
+            f.write(
+                f"{self.weightbackground},{self.qBackgroundLorentz},{self.counts_per_pixel},{self.xshift},{self.yshift},{self.ellipticity_scale},{self.salt_and_pepper_scale}\n"
+            )
 
     def _as_array(self, ar):
         return self._xp.asarray(ar)
 
-
-    # def _get_dim(self, x, idx):
-    #     if x.shape.ndims is None:
-    #         return tf.shape(x)[idx]
-    #     return x.shape[idx] or tf.shape(x)[idx]
-
-
-    def _get_qx_qy(self, input_shape, pixel_size_AA = 0.20):
+    def _get_qx_qy(self, input_shape, pixel_size_AA=0.20):
         """
         get qx,qy from cbed
         """
         N = input_shape
         qx = np.sort(np.fft.fftfreq(N[0], pixel_size_AA)).reshape((N[0], 1, 1))
         qy = np.sort(np.fft.fftfreq(N[1], pixel_size_AA)).reshape((1, N[1], 1))
-
         return qx, qy
 
     def _make_fourier_coord(self, Nx, Ny, pixelSize):
@@ -139,8 +143,10 @@ class Image_Augmentation(object):
         Specifying the pixelSize argument sets a unit size.
         """
         xp = self._xp
-        if hasattr(pixelSize, '__len__'):
-            assert len(pixelSize) == 2, "pixelSize must either be a scalar or have length 2"
+        if hasattr(pixelSize, "__len__"):
+            assert (
+                len(pixelSize) == 2
+            ), "pixelSize must either be a scalar or have length 2"
             pixelSize_x = pixelSize[0]
             pixelSize_y = pixelSize[1]
         else:
@@ -152,42 +158,50 @@ class Image_Augmentation(object):
         qy, qx = xp.meshgrid(qy, qx)
         return qx, qy
 
-    def augment_img(self, inputs, probe = None):
+    def augment_img(self, inputs, probe=None):
         start_time = time.time()
         input_shape = inputs.shape
-        if self.background:
+        if self.add_background:
             input_noise = self.background_plasmon(inputs, probe)
         else:
             input_noise = inputs
             self.weightbackground = 0
             self.qBackgroundLorentz = 0
 
-        if self.shot:
+        if self.add_shot:
             input_noise = self.shot_noise(input_noise)
         else:
             self.counts_per_pixel = 0
 
-        ################
-        if self.pattern_shift:
+        if self.add_pattern_shift:
             input_noise = self.pattern_shift_ar(input_noise)
         else:
             self.xshift = 0
             self.yshift = 0
 
-        if self.ellipticity:
-            input_noise = self.elliptic_distort(input_noise)
+        if self.add_ellipticity or self.add_pattern_shift:
+            input_noise = self.elastic_distort(input_noise)
+            if not self.add_ellipticity:
+                self.ellipticity_scale = 0
+            elif not self.add_pattern_shift:
+                self.xshift = self.yshift = 0
         else:
-            self.scale = 0
-            
-        if self.salt_and_pepper: 
+            self.ellipticity_scale = 0
+            self.xshift = self.yshift = 0
+
+        if self.add_salt_and_pepper:
             input_noise = self.apply_salt_and_pepper(input_noise)
+        else:
+            self.salt_and_pepper_scale = 0
 
         t = time.time() - start_time
 
         if self.verbose:
             self.get_params()
             self.write_logs()
-            print(f'Augmentation Status: it took {t/60:.1e} minutes to augment {input_shape[0]} images...')
+            print(
+                f"Augmentation Status: it took {t/60:.1e} minutes to augment {input_shape[0]} images..."
+            )
         else:
             self.write_logs()
 
@@ -200,50 +214,52 @@ class Image_Augmentation(object):
         xp = self._xp
         image = xp.asarray(inputs)
         ###image_scale = self.scale_image(inputs)
-        image_noise = xp.random.poisson(lam = xp.maximum(image,0) * self.counts_per_pixel)/float(self.counts_per_pixel)
+        image_noise = xp.random.poisson(
+            lam=xp.maximum(image, 0) * self.counts_per_pixel
+        ) / float(self.counts_per_pixel)
 
         return image_noise
 
-    # def elliptic_distort(
-    #     self, inputs):
-    #     """
-    #     Elliptic distortion
-    #     """
-    #     image = self._as_array(inputs)
-    #     batch_size, height, width, channels = (
-    #         self._get_dim(image, 0),
-    #         self._get_dim(image, 1),
-    #         self._get_dim(image, 2),
-    #         self._get_dim(image, 3),
-    #     )
+    def elastic_distort(self, inputs):
+        """
+        Elliptic distortion and bilinear interpolated x/y shifts
+        """
+        image = self._as_array(inputs)
+        batch_size, height, width, _channels = image.shape
+        xp = self._xp
 
-    #     exx = 0.7 * self.scale
-    #     eyy = -0.5 * self.scale
-    #     exy = -0.9 * self.scale
+        exx = 1 / self.scale * (xp.random.rand() + 0.5) * xp.random.choice((1, -1))
+        eyy = 1 / self.scale * (xp.random.rand() + 0.5) * xp.random.choice((1, -1))
+        exy = 1 / self.scale * (xp.random.rand() + 0.5) * xp.random.choice((1, -1))
+        # original -- was hardcoded for some reason
+        # exx = 0.7 * scale
+        # eyy = -0.5 * scale
+        # exy = -0.9 * scale
 
-    #     m = [[1+exx, exy/2], [exy/2, 1+eyy]]
+        m = [[1 + exx, exy / 2], [exy / 2, 1 + eyy]]
 
-    #     grid_x, grid_y = tf.meshgrid(tf.range(width), tf.range(height))
-    #     grid_x = grid_x - tf.math.reduce_mean(grid_x)
-    #     grid_y = grid_y - tf.math.reduce_mean(grid_y)
+        grid_x, grid_y = xp.meshgrid(xp.arange(width), xp.arange(height))
+        grid_x = (grid_x - grid_x.mean()).astype(xp.float32)
+        grid_y = (grid_y - grid_y.mean()).astype(xp.float32)
 
-    #     grid_x = tf.cast(grid_x, tf.float32)
-    #     grid_y = tf.cast(grid_y, tf.float32)
+        if self.add_pattern_shift:
+            grid_x += self.xshift
+            grid_y += self.yshift
 
-    #     #print(stacked_grid)
+        flow_x = grid_x * m[0][0] + grid_y * m[1][0]
+        flow_y = grid_x * m[0][1] + grid_y * m[1][1]
 
-    #     flow_x =  (grid_x*m[0][0] + grid_y*m[1][0])
-    #     flow_y =  (grid_x*m[0][1] + grid_y*m[1][1])
+        flow_grid = xp.stack([flow_y, flow_x], axis=2).astype(xp.float32)
+        batched_flow_grid = xp.expand_dims(flow_grid, axis=0)
 
-    #     flow_grid = tf.cast(tf.stack([flow_y, flow_x], axis=2), grid_x.dtype)
-    #     batched_flow_grid = tf.expand_dims(flow_grid, axis=0)
+        batched_flow_grid = xp.repeat(batched_flow_grid, batch_size, axis=0)
+        assert (
+            batched_flow_grid.shape[0] == batch_size
+        ), f"The flow batch size ({batched_flow_grid.shape[0]}) != image batch size ({batch_size})"
 
-    #     batched_flow_grid = tf.repeat(batched_flow_grid, batch_size, axis=0)
-    #     #assert(self._get_dim(batched_flow_grid, 0) == batch_size); "The flow batch size and the image batch size is different!!"
+        imageOut = dense_image_warp(image, batched_flow_grid)
 
-    #     # imageOut = dense_image_warp(image, batched_flow_grid)
-
-    #     return imageOut
+        return imageOut
 
     def background_plasmon(self, inputs, probe=None):
         """
@@ -253,8 +269,8 @@ class Image_Augmentation(object):
         image = xp.asarray(inputs)
         batch_size, height, width, channels = image.shape
 
-        qx,qy = self._get_qx_qy([height,width])
-        CBEDbg = 1./ (qx**2 + qy**2 + self.qBackgroundLorentz**2)
+        qx, qy = self._get_qx_qy([height, width])
+        CBEDbg = 1.0 / (qx**2 + qy**2 + self.qBackgroundLorentz**2)
         CBEDbg = xp.squeeze(CBEDbg)
         CBEDbg = CBEDbg / xp.sum(CBEDbg)
 
@@ -263,68 +279,58 @@ class Image_Augmentation(object):
         CBEDbg = xp.expand_dims(CBEDbg, axis=-1)
         CBEDbg = xp.repeat(CBEDbg, channels, axis=0)
 
-        CBEDbg = xp.transpose(CBEDbg, (3,0,1,2))
-        probe = xp.transpose(probe, (3,0,1,2))
+        CBEDbg = xp.transpose(CBEDbg, (3, 0, 1, 2))
+        probe = xp.transpose(probe, (3, 0, 1, 2))
 
         CBEDbg_ff = xp.fft.fft2(CBEDbg).astype(xp.complex128)
         probe_ff = xp.fft.fft2(probe).astype(xp.complex128)
         mul_ff = CBEDbg_ff * probe_ff
 
-        CBEDbgConv = xp.fft.fftshift(xp.fft.ifft2(mul_ff), axes = [2,3])
-        CBEDbgConv = xp.transpose(CBEDbgConv, (1,2,3,0))
+        CBEDbgConv = xp.fft.fftshift(xp.fft.ifft2(mul_ff), axes=[2, 3])
+        CBEDbgConv = xp.transpose(CBEDbgConv, (1, 2, 3, 0))
 
-        CBEDout = inputs.astype(xp.float32) * (1-self.weightbackground) + CBEDbgConv.real * self.weightbackground
-        # CBEDout = inputs.astype(xp.float32) * (1-self.weightbackground) + CBEDbgConv.astype(xp.float32) * self.weightbackground
+        CBEDout = (
+            inputs.astype(xp.float32) * (1 - self.weightbackground)
+            + CBEDbgConv.real * self.weightbackground
+        )
 
         return CBEDout
 
-    def pattern_shift_ar(self, inputs):
+    def fourrier_shift_ar(self, inputs):
         """
         Apply pixel shift to the pattern using Fourier shift theorem for subpixel shifting
+        this can add ringing due to undersampling
         """
-        image = self._as_array(inputs)        
+        image = self._as_array(inputs)
         _batch_size, height, width, _channels = image.shape
         xp = self._xp
-        
-        # im = xp.zeros((_batch_size, height*2, width*2, _channels)) 
-        # im[:, :height, :width, :] = image 
-        # im[:, height:, :width, :] = xp.flip(image, axis=1)
-        # im[:, :height, width:, :] = xp.flip(image, axis=2)
-        # im[:, height:, width:, :] = xp.flip(xp.flip(image, axis=2), axis=1)
-        # image = im
 
         qx, qy = self._make_fourier_coord(height, width, 1)
-        # qx, qy = self._make_fourier_coord(height*2, width*2, 1)
+        ar = xp.transpose(image, (0, 3, 1, 2)).astype(xp.complex64)
 
-        ar = xp.transpose(image, (0,3,1,2)).astype(xp.complex64)
-
-        w = xp.exp(-(2.j * xp.pi) * ((self.yshift * qy) + (self.xshift * qx)))
+        w = xp.exp(-(2.0j * xp.pi) * ((self.yshift * qy) + (self.xshift * qx)))
         shifted_ar = xp.fft.ifft2(xp.fft.fft2(ar) * w).real
 
-        shifted_ar = xp.transpose(shifted_ar, (0,2,3,1))
-        
-        # shifted_ar = shifted_ar[:,:height, :width, :] 
-
+        shifted_ar = xp.transpose(shifted_ar, (0, 2, 3, 1))
         return shifted_ar
-    
-    def apply_salt_and_pepper(self, inputs): 
+
+    def apply_salt_and_pepper(self, inputs):
         minval = inputs.min()
-        imfac = (inputs - minval).max()        
+        imfac = (inputs - minval).max()
         im_sp = self.get_salt_and_pepper(inputs, self.salt_and_pepper)
         im_sp = (im_sp * imfac) + minval
         return im_sp
-    
-    
-    def get_salt_and_pepper(self, image, amount=1e-3, salt_vs_pepper=1., low_clip=0):
+
+    def get_salt_and_pepper(self, image, amount=1e-3, salt_vs_pepper=1.0, low_clip=0):
         """
-        expects normalized input [0,1] 
-        based off skimage implementation 
+        expects normalized input [0,1]
+        based off skimage implementation
         """
-        xp = self._xp 
+        xp = self._xp
         out = image.copy()
-        flipped = xp.random.random(out.shape) <= amount 
+        flipped = xp.random.random(out.shape) <= amount
         salted = xp.random.random(out.shape) <= salt_vs_pepper
         peppered = ~salted
         out[flipped & salted] = 1
-        out[flipped & peppered] = low_clip  
-        return out 
+        out[flipped & peppered] = low_clip
+        return out
