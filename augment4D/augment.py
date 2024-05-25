@@ -139,9 +139,10 @@ class Image_Augmentation(object):
         """
         get qx,qy from cbed
         """
+        xp = self._xp 
         N = input_shape
-        qx = np.sort(np.fft.fftfreq(N[0], pixel_size_AA)).reshape((N[0], 1, 1))
-        qy = np.sort(np.fft.fftfreq(N[1], pixel_size_AA)).reshape((1, N[1], 1))
+        qx = xp.sort(xp.fft.fftfreq(N[0], pixel_size_AA)).reshape((N[0], 1, 1))
+        qy = xp.sort(xp.fft.fftfreq(N[1], pixel_size_AA)).reshape((1, N[1], 1))
         return qx, qy
 
     def _make_fourier_coord(self, Nx, Ny, pixelSize):
@@ -254,7 +255,7 @@ class Image_Augmentation(object):
             batched_flow_grid.shape[0] == batch_size
         ), f"The flow batch size ({batched_flow_grid.shape[0]}) != image batch size ({batch_size})"
 
-        imageOut = dense_image_warp(image, batched_flow_grid)
+        imageOut = dense_image_warp(image, batched_flow_grid, xp=self._xp)
 
         return imageOut
 
@@ -264,6 +265,7 @@ class Image_Augmentation(object):
         """
         xp = self._xp
         image = xp.asarray(inputs)
+        probe = xp.asarray(probe) if probe is not None else None 
         batch_size, height, width, channels = image.shape
 
         qx, qy = self._get_qx_qy([height, width])
@@ -285,15 +287,15 @@ class Image_Augmentation(object):
 
         CBEDbgConv = xp.fft.fftshift(xp.fft.ifft2(mul_ff), axes=[2, 3])
         CBEDbgConv = xp.transpose(CBEDbgConv, (1, 2, 3, 0))
-
+        
         CBEDout = (
-            inputs.astype(xp.float32) * (1 - self.weightbackground)
+            image.astype(xp.float32) * (1 - self.weightbackground)
             + CBEDbgConv.real * self.weightbackground
         )
 
         return CBEDout
 
-    def fourrier_shift_ar(self, inputs):
+    def fourier_shift_ar(self, inputs):
         """
         Apply pixel shift to the pattern using Fourier shift theorem for subpixel shifting
         this can add ringing due to undersampling

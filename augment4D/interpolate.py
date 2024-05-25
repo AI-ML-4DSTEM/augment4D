@@ -148,6 +148,6 @@ def dense_image_warp(image, flow, xp=np):
     )
 
     # Compute values at the query points, then reshape the result back to the image grid
-    interpolated = interpolate_bilinear(image, query_points_flattened)
+    interpolated = interpolate_bilinear(image, query_points_flattened, xp=xp)
     interpolated = xp.reshape(interpolated, [batch_size, height, width, channels])
     return interpolated
