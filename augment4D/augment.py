@@ -6,9 +6,11 @@ The different available augmentation includes elliptic distrotion, plasmonic bac
 noise and poisson shot noise. The elliptic distortion is recommeded to be applied on
 CBED, Probe, Potential Vg and Qz tilts while other noise are only applied on CBED input.
 """
-import time
-import numpy as np
+import os
 import secrets
+import time
+
+import numpy as np
 
 try:
     import cupy as cp
@@ -33,12 +35,34 @@ class Image_Augmentation(object):
         ellipticity_scale: list[float] | float = [0, 0.15],
         add_salt_and_pepper: bool = False,
         salt_and_pepper: list[float] | float = [0, 1e-3],
-        verbose=False,
-        log_file="./logs/augment_log.csv",
-        device="cpu",
-        seed=None,
-        magnify_only=True,  # if True forces exx and eyy <= 1, this prevents artifats that arise from output images smaller than input
+        verbose: bool = False,
+        log_file: os.PathLike = "./logs/augment_log.csv",
+        device: str = "cpu",
+        seed: int | None = None,
+        magnify_only: bool = True,
     ):
+        """Init augmentation, can set params here or with .set_params()
+
+        Args:
+            add_bkg (bool, optional): Whether or not to add inelastic plasmon backgorund. Defaults to False.
+            bkg_weight (float, optional): Range of values for weighting the plasmon background. Defaults to 0.1.
+            bkg_q (float, optional): Range of characteristic frequency of plasmon background. Defaults to 0.1.
+            add_shot (bool, optional): Whether or not to add Poisson noise. Defaults to False.
+            e_dose (int, optional): Range of total dose for shot noise, total dose in units of e. Defaults to 1000.
+            add_shift (bool, optional): Whether or not to apply sub-pixel shifting. Defaults to False.
+            xshift_range (int, optional): Range of absolute x shift in pixels. Defaults to 1.
+            yshift_range (int, optional): Range of absolute y shift in pixels. Defaults to 1.
+            add_ellipticity (bool, optional): Whether or not to add elliptic transforms. Defaults to False.
+            ellipticity_scale (float, optional): Range of weight of elliptic transforms. Defaults to 0.1.
+            add_salt_and_pepper (_type_, optional): Whether or not to add salt & pepper noise. Defaults to None.
+            salt_and_pepper (_type_, optional): Fraction of image to noise. Defaults to 1e-3.
+            verbose (bool, optional): Whether to include print statements. Defaults to False.
+            log_file (os.PathLike, optional): Log file to print to. Defaults to "./logs/augment_log.csv".
+            device (str, optional): gpu or cpu. Defaults to "cpu".
+            seed (int | None, optional): random seed used by RNG. Defaults to None.
+            magnify_only (bool, optional): If True forces exx and eyy <= 1, this prevents artifacts
+                that arise from output images smaller than input. Defaults to True.
+        """
 
         self.device = device.lower()
         if self.device == "gpu":
@@ -235,20 +259,23 @@ class Image_Augmentation(object):
         print("<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< \n", end="\r")
 
     def augment_img(self, inputs, probe=None):
+        """
+        Apply augmentations to a stack of images.
+        """
         start_time = time.time()
         input_shape = inputs.shape
         noised = inputs
         if self.add_bkg:
-            noised = self.background_plasmon(inputs, probe)
+            noised = self._apply_bkg(inputs, probe)
 
         if self.add_shot:
-            noised = self.shot_noise(noised)
+            noised = self._apply_shot(noised)
 
         if self.add_ellipticity or self.add_pattern_shift:
-            noised = self.elastic_distort(noised)
+            noised = self._apply_elastic(noised)
 
         if self.add_salt_and_pepper:
-            noised = self.apply_salt_and_pepper(noised)
+            noised = self._apply_salt_and_pepper(noised)
 
         t = time.time() - start_time
 
@@ -262,7 +289,7 @@ class Image_Augmentation(object):
 
         return noised
 
-    def shot_noise(self, inputs):
+    def _apply_shot(self, inputs):
         """
         Apply Shot noise
         """
@@ -273,7 +300,7 @@ class Image_Augmentation(object):
         image /= image.sum()
         return self._rng.poisson(image * self.e_dose) + offset
 
-    def elastic_distort(self, inputs):
+    def _apply_elastic(self, inputs):
         """
         Elliptic distortion and bilinear interpolated x/y shifts
         """
@@ -306,7 +333,7 @@ class Image_Augmentation(object):
 
         return imageOut
 
-    def background_plasmon(self, inputs, probe=None):
+    def _apply_bkg(self, inputs, probe=None):
         """
         Apply background plasmon noise
         """
@@ -336,13 +363,12 @@ class Image_Augmentation(object):
         CBEDbgConv = xp.transpose(CBEDbgConv, (1, 2, 3, 0))
 
         CBEDout = (
-            image.astype(xp.float32) * (1 - self.bkg_weight)
-            + CBEDbgConv.real * self.bkg_weight
+            image.astype(xp.float32) * (1 - self.bkg_weight) + CBEDbgConv.real * self.bkg_weight
         )
 
         return CBEDout
 
-    def fourier_shift_ar(self, inputs):
+    def _fourier_shift_ar(self, inputs):
         """
         Apply pixel shift to the pattern using Fourier shift theorem for subpixel shifting
         this can add ringing due to undersampling
@@ -360,19 +386,18 @@ class Image_Augmentation(object):
         shifted_ar = xp.transpose(shifted_ar, (0, 2, 3, 1))
         return shifted_ar
 
-    def apply_salt_and_pepper(self, inputs):
+    def _apply_salt_and_pepper(self, inputs):
         offset = inputs.min()
         ptp = (inputs - offset).max()
-        im_sp = self.get_salt_and_pepper(inputs, self.salt_and_pepper)
+        im_sp = self._get_salt_and_pepper(inputs, self.salt_and_pepper)
         im_sp = (im_sp * ptp) + offset
         return im_sp
 
-    def get_salt_and_pepper(self, image, amount=1e-3, salt_vs_pepper=1.0, low_clip=0):
+    def _get_salt_and_pepper(self, image, amount=1e-3, salt_vs_pepper=1.0, low_clip=0):
         """
         expects normalized input [0,1]
         based off skimage implementation
         """
-        xp = self._xp
         out = image.copy()
         flipped = self._rng.random(out.shape) <= amount
         salted = self._rng.random(out.shape) <= salt_vs_pepper
@@ -415,7 +440,6 @@ class Image_Augmentation(object):
         qx = xp.sort(xp.fft.fftfreq(N[0], pixel_size_AA)).reshape((N[0], 1, 1))
         qy = xp.sort(xp.fft.fftfreq(N[1], pixel_size_AA)).reshape((1, N[1], 1))
         return qx, qy
-
 
     def _make_fourier_coord(self, Nx, Ny, pixelSize):
         """
