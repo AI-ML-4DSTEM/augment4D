@@ -91,6 +91,7 @@ class Image_Augmentation(object):
             add_salt_and_pepper,
             salt_and_pepper,
         )
+        self.generate_params()
 
         self.verbose = verbose
         self.log_file = log_file
@@ -202,6 +203,7 @@ class Image_Augmentation(object):
             self.yshift = 0
 
         if self.add_ellipticity:
+            self.ellipticity_scale = self._rand_from_range(self._ellipticity_scale_range, negative=False) 
             self.exx = self._rng.normal(loc=1, scale=self.ellipticity_scale)
             self.eyy = self._rng.normal(loc=1, scale=self.ellipticity_scale)
             self.exy = self._rng.normal(loc=0, scale=self.ellipticity_scale)
@@ -221,7 +223,7 @@ class Image_Augmentation(object):
         return
 
     def print_params(self, print_all=False):
-        print("Printing augmentation summary... \n", end="\r")
+        print("Augmentation summary:\n", end="\r")
         print(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> \n", end="\r")
         print(f"Adding background: {self.add_bkg}")
         if self.add_bkg or print_all:
@@ -234,7 +236,7 @@ class Image_Augmentation(object):
             )
         print(f"Adding shot noise: {self.add_shot}")
         if self.add_shot or print_all:
-            print(f"\te Dose range: {self._e_dose_range:.1e} | current value {self.e_dose:.2e}")
+            print(f"\te Dose range: [{self._e_dose_range[0]:.1e}, {self._e_dose_range[1]:.1e}] | current value {self.e_dose:.2e}")
         print(f"Adding shift: {self.add_pattern_shift}")
         if self.add_pattern_shift or print_all:
             print(f"\tPattern shift range (x,y): {self._xshift_range}, {self._yshift_range}")
@@ -252,7 +254,7 @@ class Image_Augmentation(object):
         print(f"Adding salt & pepper: {self.add_salt_and_pepper}")
         if self.add_salt_and_pepper or print_all:
             print(
-                f"\tSalt & pepper range: {self._salt_and_pepper_range} "
+                f"\tSalt & pepper range: [{self._salt_and_pepper_range[0]:.1e}, {self._salt_and_pepper_range[1]:.1e}]  "
                 + f"| current value: {self.salt_and_pepper:.2e}"
             )
         print(f"Random seed: {self._rng_seed}")
@@ -389,21 +391,24 @@ class Image_Augmentation(object):
     def _apply_salt_and_pepper(self, inputs):
         offset = inputs.min()
         ptp = (inputs - offset).max()
-        im_sp = self._get_salt_and_pepper(inputs, self.salt_and_pepper)
+        im_sp = self._get_salt_and_pepper(inputs, self.salt_and_pepper)            
         im_sp = (im_sp * ptp) + offset
         return im_sp
 
-    def _get_salt_and_pepper(self, image, amount=1e-3, salt_vs_pepper=1.0, low_clip=0):
+    def _get_salt_and_pepper(self, image, amount=1e-3, salt_vs_pepper=1.0, pepper_val=0, salt_val=None):
         """
         expects normalized input [0,1]
         based off skimage implementation
         """
         out = image.copy()
+        if salt_val is None:
+            salt_val = image.max() 
+        
         flipped = self._rng.random(out.shape) <= amount
         salted = self._rng.random(out.shape) <= salt_vs_pepper
         peppered = ~salted
-        out[flipped & salted] = 1
-        out[flipped & peppered] = low_clip
+        out[flipped & salted] = salt_val
+        out[flipped & peppered] = pepper_val
         return out
 
     def write_logs(self):
